@@ -7,8 +7,12 @@ import "./Interfaces/IERC20.sol";
 import "./Interfaces/IMemePool.sol";
 import "./Interfaces/IMemeEventTracker.sol";
 import "./Interfaces/IMemeStorage.sol";
+import "./Interfaces/IMemeCoin.sol";
+import {IMemeDeployerInterface} from "./Interfaces/IMemeDeployer.sol";
 
-contract MemeDeployer is Ownable {
+contract MemeDeployer is Ownable, IMemeDeployerInterface {
+    uint256 public constant BASIS_POINTS = 10000;
+
     event memeCreated(
         address indexed creator,
         address indexed memeContract,
@@ -35,10 +39,9 @@ contract MemeDeployer is Ownable {
     address public memeStorage;
     address public eventTracker;
     address public memePool;
-    uint256 public teamFee = 10000000; // value in wei
-    uint256 public teamFeePer = 100; // base of 10000 -> 100 equals 1%
-    uint256 public ownerFeePer = 1000; // base of 10000 -> 1000 means 10%
-    uint256 public listThreshold = 12000; // value in ether -> 12000 means 12000 tokens(any decimal place)
+    uint256 public teamFee = 100000000000000; // value in wei
+    uint256 public creatorFeePer = 1000; // base of 10000 -> 1000 means 10%
+    uint256 public listThreshold = 69420; // value in ether -> 69420 means 69420 tokens(any decimal place) in USDC
     uint256 public antiSnipePer = 5; // base of 100 -> 5 equals 5%
     uint256 public affiliatePer = 1000; // base of 10000 -> 1000 equals 10%
     uint256 public supplyValue = 1000000000 ether;
@@ -47,6 +50,7 @@ contract MemeDeployer is Ownable {
     uint256 public baseCount;
     bool public supplyLock = true;
     bool public lpBurn = true;
+
     mapping(address => bool) public routerValid;
     mapping(address => bool) public routerAdded;
     mapping(uint256 => address) public routerStorage;
@@ -74,7 +78,8 @@ contract MemeDeployer is Ownable {
         address _baseToken,
         address _router,
         bool _antiSnipe,
-        uint256 _amountAntiSnipe
+        uint256 _amountAntiSnipe,
+        uint256 _lockedDeadlineDays
     ) public payable returns (address) {
         require(routerValid[_router], "invalid router");
         require(baseValid[_baseToken], "invalid base token");
@@ -109,9 +114,14 @@ contract MemeDeployer is Ownable {
         );
 
         if (_antiSnipe) {
-            IMemePool(memePool).buyTokens{value: _amountAntiSnipe}(memeToken, 0, msg.sender);
+            IMemePool(memePool).buyTokens{value: _amountAntiSnipe}(memeToken, 0, msg.sender, 0);
             IERC20(memeToken).transfer(msg.sender, IERC20(memeToken).balanceOf(address(this)));
+
+            if (_lockedDeadlineDays > 0) {
+                IMemePool(memePool).lockTokens(msg.sender, memeToken, _lockedDeadlineDays);
+            }
         }
+
         IMemeEventTracker(eventTracker).createMemeEvent(
             msg.sender,
             (memeToken),
@@ -142,8 +152,8 @@ contract MemeDeployer is Ownable {
         teamFee = _newTeamFeeInWei;
     }
 
-    function updateownerFee(uint256 _newOwnerFeeBaseTenK) public onlyOwner {
-        ownerFeePer = _newOwnerFeeBaseTenK;
+    function updateCreatorFee(uint256 _newCreatorFeeBaseTenK) public onlyOwner {
+        creatorFeePer = _newCreatorFeeBaseTenK;
     }
 
     function updateSpecialAffiliateData(address _affiliateAddrs, bool _status, uint256 _specialPer) public onlyOwner {
@@ -159,8 +169,8 @@ contract MemeDeployer is Ownable {
         }
     }
 
-    function getOwnerPer() public view returns (uint256) {
-        return ownerFeePer;
+    function getCreatorPer() public view returns (uint256) {
+        return creatorFeePer;
     }
 
     function getSpecialAffiliateValidity(address _affiliateAddrs) public view returns (bool) {
@@ -253,10 +263,6 @@ contract MemeDeployer is Ownable {
 
     function updateAffiliatePerBaseTenK(uint256 _newAffPer) public onlyOwner {
         affiliatePer = _newAffPer;
-    }
-
-    function updateteamFeeper(uint256 _newFeePer) public onlyOwner {
-        teamFeePer = _newFeePer;
     }
 
     function emitRoyal(

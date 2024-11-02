@@ -26,7 +26,7 @@ contract RewardPool is Ownable, ReentrancyGuard {
 
         uint256 balanceBefore = IERC20(_memeCoinAddress).balanceOf(address(this));
 
-        IMemePool(memePool).buyTokens{value: msg.value}(_memeCoinAddress, 0, _affiliate);
+        IMemePool(memePool).buyTokens{value: msg.value}(_memeCoinAddress, 0, _affiliate, 0);
 
         uint256 tokensReceived = IERC20(_memeCoinAddress).balanceOf(address(this)) - balanceBefore;
 

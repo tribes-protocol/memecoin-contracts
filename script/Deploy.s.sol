@@ -7,7 +7,7 @@ import "../src/MemeStorage.sol";
 import "../src/MemeCoin.sol";
 import "../src/MemeDeployer.sol";
 import "../src/FeeDistribution.sol";
-
+import "../src/MemeSwap.sol";
 import {MemePool} from "../src/MemePool.sol";
 import {RewardPool} from "../src/RewardPool.sol";
 import {LpLockDeployer} from "../src/LpLockDeployer.sol";
@@ -22,7 +22,7 @@ contract Deploy is Script {
     function run() public {
         vm.startBroadcast();
 
-        CreationFeeContract feeDistributionContract = new CreationFeeContract();
+        FeeDistribution feeDistributionContract = new FeeDistribution();
         MemeCoin memeCoinContract = new MemeCoin();
         LpLockDeployer lpLockDeployer = new LpLockDeployer();
 
@@ -35,12 +35,14 @@ contract Deploy is Script {
             address(lpLockDeployer),
             USDC,
             address(memeEventTracker),
-            100
+            200 // 2%
         );
 
         MemeDeployer memeDeployer = new MemeDeployer(
             address(memePool), address(feeDistributionContract), address(memeStorage), address(memeEventTracker)
         );
+
+        MemeSwap memeSwap = new MemeSwap(Uniswap_V2_Router, address(memePool));
 
         RewardPool rewardPool = new RewardPool(address(memePool));
 
@@ -48,13 +50,13 @@ contract Deploy is Script {
 
         memeDeployer.addRouter(Uniswap_V2_Router);
         memeDeployer.addBaseToken(WETH);
+        memeDeployer.updateTeamFee(200000000000000); // around $0.50
 
         memePool.addDeployer(address(memeDeployer));
+        memePool.updateMemeSwap(address(memeSwap));
         memeStorage.addDeployer(address(memeDeployer));
         memeEventTracker.addDeployer(address(memeDeployer));
         memeEventTracker.addDeployer(address(memePool));
-
-        memeDeployer.updateListThreshold(69420);
 
         vm.stopBroadcast();
 
@@ -66,5 +68,6 @@ contract Deploy is Script {
         console.log("MemePool address:", address(memePool));
         console.log("MemeDeployer address:", address(memeDeployer));
         console.log("RewardPool address:", address(rewardPool));
+        console.log("MemeSwap address:", address(memeSwap));
     }
 }

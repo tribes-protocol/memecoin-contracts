@@ -5,13 +5,13 @@ import "forge-std/Test.sol";
 import "../src/FeeDistribution.sol";
 
 contract FeeDistributionTest is Test {
-    CreationFeeContract public feeContract;
+    FeeDistribution public feeContract;
     address owner = address(0x1);
     address nonOwner = address(0x2);
 
     function setUp() public {
         vm.prank(owner);
-        feeContract = new CreationFeeContract();
+        feeContract = new FeeDistribution();
         vm.deal(address(feeContract), 1 ether);
     }
 
@@ -32,7 +32,7 @@ contract FeeDistributionTest is Test {
     }
 
     function testWithdrawFeesWhenNoFees() public {
-        CreationFeeContract emptyFeeContract = new CreationFeeContract();
+        FeeDistribution emptyFeeContract = new FeeDistribution();
         vm.expectRevert(bytes("No fees to withdraw"));
         emptyFeeContract.withdrawFees();
     }

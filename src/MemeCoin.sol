@@ -8,6 +8,7 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
 import {Votes} from "@openzeppelin/contracts/governance/utils/Votes.sol";
 import {Checkpoints} from "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
+import {IMemePool} from "./Interfaces/IMemePool.sol";
 
 contract MemeCoin is IERC20, IERC20Permit, EIP712, Nonces, Votes {
     bytes32 private constant PERMIT_TYPEHASH =
@@ -23,20 +24,25 @@ contract MemeCoin is IERC20, IERC20Permit, EIP712, Nonces, Votes {
      */
     error ERC2612InvalidSigner(address signer, address owner);
 
+    struct LockInfo {
+        uint256 startTime; // Initial lock timestamp
+        uint256 durationDays; // Lock duration in days
+    }
+
     string public name;
     string public symbol;
     uint8 public constant decimals = 18;
     uint8 public constant version = 2;
 
-    address public initialFrom;
-    address public deployerFrom;
-    address public rewardPool;
+    address public memePool;
+    address public deployer;
     bool public isInitialized;
     bool public dexInitiated;
 
     uint256 private _totalSupply;
     mapping(address => uint256) private _balances;
     mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => LockInfo) private _locks;
 
     constructor() EIP712("memeCoin.new", "1") {}
 
@@ -44,15 +50,15 @@ contract MemeCoin is IERC20, IERC20Permit, EIP712, Nonces, Votes {
         uint256 initialSupply,
         string memory _name,
         string memory _symbol,
-        address _midDeployer,
-        address _deployer,
-        address _rewardPool
+        address _memePool,
+        address _deployer
     ) external {
         require(!isInitialized);
-        _mint(_midDeployer, initialSupply);
-        initialFrom = _midDeployer;
-        deployerFrom = _deployer;
-        rewardPool = _rewardPool;
+        require(_memePool != address(0), "MemePool address cannot be zero");
+        require(_deployer != address(0), "Deployer address cannot be zero");
+        _mint(_memePool, initialSupply);
+        memePool = _memePool;
+        deployer = _deployer;
         name = _name;
         symbol = _symbol;
         isInitialized = true;
@@ -68,7 +74,6 @@ contract MemeCoin is IERC20, IERC20Permit, EIP712, Nonces, Votes {
 
     function transfer(address recipient, uint256 amount) public override returns (bool) {
         require(_validateTransfer(msg.sender), "not dex listed");
-
         _transfer(msg.sender, recipient, amount);
         return true;
     }
@@ -94,6 +99,10 @@ contract MemeCoin is IERC20, IERC20Permit, EIP712, Nonces, Votes {
         require(sender != address(0), "ERC20: transfer from the zero address");
         require(recipient != address(0), "ERC20: transfer to the zero address");
         require(amount > 0, "invalid transfer amount");
+
+        require(dexInitiated || block.timestamp > lockedDeadlineOf(sender), "Balance is locked");
+
+        require(_balances[sender] >= amount, "Insufficient balance");
 
         _balances[sender] -= amount;
         _balances[recipient] += amount;
@@ -125,7 +134,14 @@ contract MemeCoin is IERC20, IERC20Permit, EIP712, Nonces, Votes {
         if (dexInitiated) {
             return true;
         }
-        if (_from == initialFrom || _from == deployerFrom || _from == rewardPool) {
+
+        address rewardPool = IMemePool(memePool).rewardPool();
+        address memeswap = IMemePool(memePool).memeswap();
+
+        require(rewardPool != address(0), "Reward pool not set");
+        require(memeswap != address(0), "MemeSwap not set");
+
+        if (_from == memePool || _from == deployer || _from == rewardPool || _from == memeswap) {
             return true;
         }
         return false;
@@ -187,7 +203,7 @@ contract MemeCoin is IERC20, IERC20Permit, EIP712, Nonces, Votes {
     }
 
     function initiateDex() public {
-        require(msg.sender == initialFrom, "only deployer allowed");
+        require(msg.sender == memePool, "only deployer allowed");
         dexInitiated = true;
     }
 
@@ -286,5 +302,32 @@ contract MemeCoin is IERC20, IERC20Permit, EIP712, Nonces, Votes {
      */
     function checkpoints(address account, uint32 pos) public view virtual returns (Checkpoints.Checkpoint208 memory) {
         return _checkpoints(account, pos);
+    }
+
+    function lockTokens(address account, uint256 deadlineDays) external {
+        require(!dexInitiated, "Cannot lock tokens after dex initiated");
+        require(msg.sender == memePool || msg.sender == deployer, "Only deployer or memepool can lock tokens");
+        require(deadlineDays > 0 && deadlineDays <= 365, "Deadline must be between 1 and 365 days");
+        require(_balances[account] > 0, "Cannot lock zero balance");
+
+        LockInfo storage lockInfo = _locks[account];
+
+        uint256 lockDeadline = lockedDeadlineOf(account);
+        if (lockDeadline > block.timestamp) {
+            require(lockInfo.durationDays <= deadlineDays, "New duration must be greater than current duration");
+        }
+        lockInfo.durationDays = deadlineDays;
+        lockInfo.startTime = block.timestamp;
+    }
+
+    function lockedDeadlineOf(address account) public view returns (uint256) {
+        LockInfo storage lockInfo = _locks[account];
+        if (lockInfo.startTime == 0) return 0;
+        return lockInfo.startTime + (lockInfo.durationDays * 1 days);
+    }
+
+    // Helper function to get all lock information at once
+    function getLockInfo(address account) public view returns (LockInfo memory) {
+        return _locks[account];
     }
 }

@@ -3,8 +3,9 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./Interfaces/IMemeStorage.sol";
+import {IMemeEventTracker} from "./Interfaces/IMemeEventTracker.sol";
 
-contract MemeEventTracker is Ownable {
+contract MemeEventTracker is Ownable, IMemeEventTracker {
     address public memeRegistry;
     mapping(address => bool) public memeContractDeployer;
     mapping(address => address) public memeContractCreatedByDeployer;
@@ -37,6 +38,7 @@ contract MemeEventTracker is Ownable {
         uint256 timestamp,
         string tradeType
     );
+
     event memeCreated(
         address indexed creator,
         address indexed memeContract,
@@ -111,6 +113,11 @@ contract MemeEventTracker is Ownable {
     ) public {
         require(memeContractDeployer[msg.sender], "invalid deployer");
         emit listed(user, tokenAddress, router, liquidityAmount, tokenAmount, _time, totalVolume);
+    }
+
+    function lockedDeadlineUpdatedEvent(address _user, address _memeContract, uint256 _newLockedDeadlineDays) public {
+        require(memeContractDeployer[msg.sender], "invalid deployer");
+        emit IMemeEventTracker.LockedDeadlineUpdated(_user, _memeContract, _newLockedDeadlineDays);
     }
 
     function addDeployer(address _newDeployer) public onlyOwner {

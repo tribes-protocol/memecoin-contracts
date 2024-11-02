@@ -2,6 +2,8 @@
 pragma solidity ^0.8.20;
 
 interface IMemeEventTracker {
+    event LockedDeadlineUpdated(address indexed user, address indexed memecontract, uint256 numDays);
+
     function buyEvent(address _caller, address _memeContract, uint256 _buyAmount, uint256 _tokenRecieved) external;
     function sellEvent(address _caller, address _memeContract, uint256 _sellAmount, uint256 _nativeRecieved) external;
     function createMemeEvent(
@@ -24,6 +26,7 @@ interface IMemeEventTracker {
         uint256 _time,
         uint256 totalVolume
     ) external;
-    function callerValidate(address _newMemeContract) external;
     function addDeployer(address) external;
+    function lockedDeadlineUpdatedEvent(address _user, address _memeContract, uint256 _newLockedDeadlineDays)
+        external;
 }

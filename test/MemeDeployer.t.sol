@@ -17,7 +17,7 @@ contract MemeDeployerTest is Test {
     MemeStorage public memeStorage;
     MemeEventTracker public eventTracker;
     MemeCoin public memeCoin;
-    CreationFeeContract public feeDistributionContract;
+    FeeDistribution public feeDistributionContract;
     LpLockDeployer public lpLockDeployer;
 
     address USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913; // USDC on BASE
@@ -25,7 +25,7 @@ contract MemeDeployerTest is Test {
     address Uniswap_V2_Router = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24; // Uniswap V2 Router on BASE
 
     function setUp() public {
-        feeDistributionContract = new CreationFeeContract();
+        feeDistributionContract = new FeeDistribution();
         memeCoin = new MemeCoin();
         lpLockDeployer = new LpLockDeployer();
 
@@ -58,10 +58,10 @@ contract MemeDeployerTest is Test {
         uint256 newOwnerFee = 500; // 5%
 
         memeDeployer.updateTeamFee(newTeamFee);
-        memeDeployer.updateownerFee(newOwnerFee);
+        memeDeployer.updateCreatorFee(newOwnerFee);
 
         assertEq(memeDeployer.teamFee(), newTeamFee);
-        assertEq(memeDeployer.getOwnerPer(), newOwnerFee);
+        assertEq(memeDeployer.getCreatorPer(), newOwnerFee);
     }
 
     function testUpdateSupplyValue() public {

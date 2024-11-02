@@ -7,47 +7,9 @@ import "@openzeppelin/contracts/proxy/Clones.sol";
 import "./Interfaces/IERC20.sol";
 import "./Interfaces/IMemeDeployer.sol";
 import "./Interfaces/IMemeEventTracker.sol";
-
-interface UniswapRouter02 {
-    function factory() external pure returns (address);
-
-    function WETH() external pure returns (address); // WETH for BASE MAINNET
-
-    function addLiquidity(
-        address tokenA,
-        address tokenB,
-        uint256 amountADesired,
-        uint256 amountBDesired,
-        uint256 amountAMin,
-        uint256 amountBMin,
-        address to,
-        uint256 deadline
-    ) external returns (uint256 amountA, uint256 amountB, uint256 liquidity);
-
-    function addLiquidityETH(
-        address token,
-        uint256 amountTokenDesired,
-        uint256 amountTokenMin,
-        uint256 amountETHMin,
-        address to,
-        uint256 deadline
-    ) external payable returns (uint256 amountToken, uint256 amountETH, uint256 liquidity);
-
-    function swapExactETHForTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline)
-        external
-        payable
-        returns (uint256[] memory amounts);
-
-    function getAmountsOut(uint256 amountIn, address[] calldata path)
-        external
-        view
-        returns (uint256[] memory amounts);
-
-    function getAmountsIn(uint256 amountOut, address[] calldata path)
-        external
-        view
-        returns (uint256[] memory amounts);
-}
+import "./Interfaces/IMemeCoin.sol";
+import "./Interfaces/IMemePool.sol";
+import {UniswapRouter02} from "./Interfaces/IUniswapRouter02.sol";
 
 interface UniswapFactory {
     event PairCreated(address indexed token0, address indexed token1, address pair, uint256);
@@ -71,53 +33,17 @@ interface ILpLockDeployerInterface {
     ) external payable returns (address);
 }
 
-interface IMemeCoin {
-    function initialize(
-        uint256 initialSupply,
-        string memory _name,
-        string memory _symbol,
-        address _midDeployer,
-        address _deployer,
-        address _rewardPool
-    ) external;
-
-    function initiateDex() external;
-}
-
-contract MemePool is Ownable, ReentrancyGuard {
+contract MemePool is IMemePool, Ownable, ReentrancyGuard {
     address public constant DEAD = 0x000000000000000000000000000000000000dEaD;
     uint256 public constant HUNDRED = 100;
     uint256 public constant BASIS_POINTS = 10000;
-
-    struct MemeTokenPoolData {
-        uint256 reserveTokens;
-        uint256 reserveETH;
-        uint256 volume;
-        uint256 listThreshold;
-        uint256 initialReserveEth;
-        uint8 nativePer;
-        bool tradeActive;
-        bool lpBurn;
-        bool royalemitted;
-    }
-
-    struct MemeTokenPool {
-        address creator;
-        address token;
-        address baseToken;
-        address router;
-        address lockerAddress;
-        address storedLPAddress;
-        address deployer;
-        MemeTokenPoolData pool;
-    }
 
     // deployer allowed to create meme tokens
     mapping(address => bool) public allowedDeployers;
     // user => array of meme tokens
     mapping(address => address[]) public userMemeTokens;
     // meme token => meme token details
-    mapping(address => MemeTokenPool) public tokenPools;
+    mapping(address => IMemePool.MemeTokenPool) public tokenPools;
 
     address public implementation;
     address public feeContract;
@@ -125,6 +51,7 @@ contract MemePool is Ownable, ReentrancyGuard {
     address public lpLockDeployer;
     address public eventTracker;
     address public rewardPool;
+    address public memeswap;
     uint16 public feePer;
 
     event LiquidityAdded(address indexed provider, uint256 tokenAmount, uint256 ethAmount);
@@ -194,9 +121,7 @@ contract MemePool is Ownable, ReentrancyGuard {
         require(allowedDeployers[msg.sender], "not deployer");
 
         address memeToken = Clones.clone(implementation);
-        IMemeCoin(memeToken).initialize(
-            _totalSupply, _name_symbol[0], _name_symbol[1], address(this), msg.sender, rewardPool
-        );
+        IMemeCoin(memeToken).initialize(_totalSupply, _name_symbol[0], _name_symbol[1], address(this), msg.sender);
 
         // add tokens to the tokens user list
         userMemeTokens[_creator].push(memeToken);
@@ -301,7 +226,7 @@ contract MemePool is Ownable, ReentrancyGuard {
     function sellTokens(address memeToken, uint256 tokenAmount, uint256 minEth, address _affiliate)
         public
         nonReentrant
-        returns (bool, bool)
+        returns (bool, uint256)
     {
         MemeTokenPool storage token = tokenPools[memeToken];
         require(token.pool.tradeActive, "Trading not active");
@@ -309,8 +234,8 @@ contract MemePool is Ownable, ReentrancyGuard {
         uint256 tokenToSell = tokenAmount;
         uint256 ethAmount = getAmountOutETH(memeToken, tokenToSell);
         uint256 ethAmountFee = (ethAmount * feePer) / BASIS_POINTS;
-        uint256 ethAmountOwnerFee =
-            (ethAmountFee * (IMemeDeployerInterface(token.deployer).getOwnerPer())) / BASIS_POINTS;
+        uint256 ethAmountCreatorFee =
+            (ethAmountFee * (IMemeDeployerInterface(token.deployer).getCreatorPer())) / BASIS_POINTS;
         uint256 affiliateFee =
             (ethAmountFee * (IMemeDeployerInterface(token.deployer).getAffiliatePer(_affiliate))) / BASIS_POINTS;
         require(ethAmount > 0 && ethAmount >= minEth, "Slippage too high");
@@ -320,16 +245,18 @@ contract MemePool is Ownable, ReentrancyGuard {
         token.pool.volume += ethAmount;
 
         IERC20(memeToken).transferFrom(msg.sender, address(this), tokenToSell);
-        (bool success,) = feeContract.call{value: ethAmountFee - ethAmountOwnerFee - affiliateFee}(""); // paying plat fee
+        (bool success,) = feeContract.call{value: ethAmountFee - ethAmountCreatorFee - affiliateFee}(""); // paying plat fee
         require(success, "fee ETH transfer failed");
 
         (success,) = _affiliate.call{value: affiliateFee}(""); // paying affiliate fee which is same amount as plat fee %
         require(success, "aff ETH transfer failed");
 
-        (success,) = payable(owner()).call{value: ethAmountOwnerFee}(""); // paying owner fee per tx
-        require(success, "ownr ETH transfer failed");
+        (success,) = payable(token.creator).call{value: ethAmountCreatorFee}(""); // paying owner fee per tx
+        require(success, "creator ETH transfer failed");
 
-        (success,) = msg.sender.call{value: ethAmount - ethAmountFee}("");
+        uint256 amountToSend = ethAmount - ethAmountFee;
+
+        (success,) = msg.sender.call{value: amountToSend}("");
         require(success, "seller ETH transfer failed");
 
         emit sold(
@@ -353,38 +280,54 @@ contract MemePool is Ownable, ReentrancyGuard {
         );
         IMemeEventTracker(eventTracker).sellEvent(msg.sender, memeToken, tokenToSell, ethAmount);
 
-        return (true, true);
+        return (true, amountToSend);
     }
 
-    function buyTokens(address memeToken, uint256 minTokens, address _affiliate) public payable nonReentrant {
+    function buyTokens(address memeToken, uint256 minTokens, address _affiliate, uint256 _lockedDeadlineDays)
+        public
+        payable
+        nonReentrant
+    {
         require(msg.value > 0, "Invalid buy value");
-        _buyTokens(memeToken, minTokens, msg.value, _affiliate);
+        _buyTokens(memeToken, minTokens, msg.value, _affiliate, _lockedDeadlineDays);
     }
 
     function buyManyTokens(
         address[] calldata memeTokens,
         uint256[] calldata minTokensAmounts,
         uint256[] calldata ethAmounts,
-        address _affiliate
+        address _affiliate,
+        uint256 _lockedDeadlineDays
     ) public payable nonReentrant {
         require(
             memeTokens.length == minTokensAmounts.length && memeTokens.length == ethAmounts.length,
             "Array lengths mismatch"
         );
-        require(msg.value > 0, "Invalid total buy value");
+
+        uint256 totalEthAmount = 0;
+        for (uint256 i = 0; i < ethAmounts.length; i++) {
+            totalEthAmount += ethAmounts[i];
+        }
+        require(msg.value == totalEthAmount, "Invalid total buy value");
 
         for (uint256 i = 0; i < memeTokens.length; i++) {
-            _buyTokens(memeTokens[i], minTokensAmounts[i], ethAmounts[i], _affiliate);
+            _buyTokens(memeTokens[i], minTokensAmounts[i], ethAmounts[i], _affiliate, _lockedDeadlineDays);
         }
     }
 
-    function _buyTokens(address memeToken, uint256 minTokens, uint256 ethAmount, address _affiliate) internal {
+    function _buyTokens(
+        address memeToken,
+        uint256 minTokens,
+        uint256 ethAmount,
+        address _affiliate,
+        uint256 _lockedDeadlineDays
+    ) internal {
         MemeTokenPool storage token = tokenPools[memeToken];
         require(token.pool.tradeActive, "Trading not active");
 
         uint256 ethAmountFee = (ethAmount * feePer) / BASIS_POINTS;
-        uint256 ethAmountOwnerFee =
-            (ethAmountFee * (IMemeDeployerInterface(token.deployer).getOwnerPer())) / BASIS_POINTS;
+        uint256 ethAmountCreatorFee =
+            (ethAmountFee * (IMemeDeployerInterface(token.deployer).getCreatorPer())) / BASIS_POINTS;
         uint256 affiliateFee =
             (ethAmountFee * (IMemeDeployerInterface(token.deployer).getAffiliatePer(_affiliate))) / BASIS_POINTS;
 
@@ -395,16 +338,20 @@ contract MemePool is Ownable, ReentrancyGuard {
         token.pool.reserveTokens -= tokenAmount;
         token.pool.volume += ethAmount;
 
-        (bool success,) = feeContract.call{value: ethAmountFee - ethAmountOwnerFee - affiliateFee}("");
+        (bool success,) = feeContract.call{value: ethAmountFee - ethAmountCreatorFee - affiliateFee}("");
         require(success, "fee ETH transfer failed");
 
         (success,) = _affiliate.call{value: affiliateFee}("");
         require(success, "affiliate fee ETH transfer failed");
 
-        (success,) = payable(owner()).call{value: ethAmountOwnerFee}("");
-        require(success, "owner fee ETH transfer failed");
+        (success,) = payable(token.creator).call{value: ethAmountCreatorFee}("");
+        require(success, "creator fee ETH transfer failed");
 
         IERC20(memeToken).transfer(msg.sender, tokenAmount);
+
+        if (_lockedDeadlineDays > 0) {
+            lockTokens(msg.sender, memeToken, _lockedDeadlineDays);
+        }
 
         emit bought(
             msg.sender,
@@ -687,6 +634,12 @@ contract MemePool is Ownable, ReentrancyGuard {
         return false;
     }
 
+    function lockTokens(address _user, address _memeContract, uint256 _newLockedDeadlineDays) public {
+        require(msg.sender == _user || allowedDeployers[msg.sender], "unauthorized account");
+        IMemeCoin(_memeContract).lockTokens(_user, _newLockedDeadlineDays);
+        IMemeEventTracker(eventTracker).lockedDeadlineUpdatedEvent(_user, _memeContract, _newLockedDeadlineDays);
+    }
+
     function addDeployer(address _deployer) public onlyOwner {
         allowedDeployers[_deployer] = true;
     }
@@ -695,32 +648,43 @@ contract MemePool is Ownable, ReentrancyGuard {
         allowedDeployers[_deployer] = false;
     }
 
+    function updateMemeSwap(address _newMemeSwap) public onlyOwner {
+        require(_newMemeSwap != address(0), "Cannot be zero address");
+        memeswap = _newMemeSwap;
+    }
+
     function updateImplementation(address _implementation) public onlyOwner {
         require(_implementation != address(0));
         implementation = _implementation;
     }
 
     function updateFeeContract(address _newFeeContract) public onlyOwner {
+        require(_newFeeContract != address(0), "Cannot be zero address");
         feeContract = _newFeeContract;
     }
 
     function updateLpLockDeployer(address _newLpLockDeployer) public onlyOwner {
+        require(_newLpLockDeployer != address(0), "Cannot be zero address");
         lpLockDeployer = _newLpLockDeployer;
     }
 
     function updateEventTracker(address _newEventTracker) public onlyOwner {
+        require(_newEventTracker != address(0), "Cannot be zero address");
         eventTracker = _newEventTracker;
     }
 
     function updateStableAddress(address _newStableAddress) public onlyOwner {
+        require(_newStableAddress != address(0), "Cannot be zero address");
         stableAddress = _newStableAddress;
     }
 
-    function updateteamFeeper(uint16 _newFeePer) public onlyOwner {
+    function updateTeamFeePer(uint16 _newFeePer) public onlyOwner {
+        require(_newFeePer != 0, "Cannot be zero");
         feePer = _newFeePer;
     }
 
     function updateRewardPool(address _newRewardPool) public onlyOwner {
+        require(_newRewardPool != address(0), "Cannot be zero address");
         rewardPool = _newRewardPool;
     }
 }
